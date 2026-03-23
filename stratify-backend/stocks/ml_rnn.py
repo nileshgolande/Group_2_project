@@ -12,7 +12,7 @@ import numpy as np
 import yfinance as yf
 from django.conf import settings
 
-from .universe import UNIVERSE_DB_SYMBOLS, yahoo_ticker_for_db_symbol
+from .universe import yahoo_ticker_for_db_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +31,11 @@ def artifact_dir() -> Path:
     return p
 
 
-def lstm_path() -> Path:
-    return artifact_dir() / 'rnn_lstm.keras'
+def lstm_path(universe: str) -> Path:
+    return artifact_dir() / f'rnn_lstm_{universe.lower()}.keras'
 
-
-def mlp_path() -> Path:
-    return artifact_dir() / 'rnn_mlp.joblib'
+def mlp_path(universe: str) -> Path:
+    return artifact_dir() / f'rnn_mlp_{universe.lower()}.joblib'
 
 
 def fetch_closes_3y(db_symbol: str) -> np.ndarray:
@@ -131,7 +130,7 @@ def build_training_arrays(
     return np.concatenate(all_x, axis=0), np.concatenate(all_y, axis=0)
 
 
-def train_lstm(X: np.ndarray, y: np.ndarray, *, epochs: int = 12) -> None:
+def train_lstm(X: np.ndarray, y: np.ndarray, *, epochs: int = 12, universe: str) -> None:
     import tensorflow as tf  # noqa: PLC0415
 
     tf.keras.utils.set_random_seed(42)
@@ -145,12 +144,12 @@ def train_lstm(X: np.ndarray, y: np.ndarray, *, epochs: int = 12) -> None:
     )
     model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
     model.fit(X, y, epochs=epochs, batch_size=64, validation_split=0.1, verbose=1)
-    path = lstm_path()
+    path = lstm_path(universe)
     model.save(path)
     logger.info('Saved LSTM to %s', path)
 
 
-def train_mlp_sklearn(X: np.ndarray, y: np.ndarray) -> None:
+def train_mlp_sklearn(X: np.ndarray, y: np.ndarray, *, universe: str) -> None:
     import joblib  # noqa: PLC0415
     from sklearn.neural_network import MLPClassifier  # noqa: PLC0415
 
@@ -163,15 +162,24 @@ def train_mlp_sklearn(X: np.ndarray, y: np.ndarray) -> None:
         validation_fraction=0.1,
     )
     clf.fit(Xf, y)
-    path = mlp_path()
+    path = mlp_path(universe)
     joblib.dump(clf, path)
     logger.info('Saved sklearn MLP to %s', path)
 
 
-def train_universe_model(*, use_sklearn: bool = False, epochs: int = 12) -> str:
-    """Download 3y data for all universe symbols, train, return 'lstm' or 'mlp'."""
+def train_universe_model(
+    db_symbols: list[str],
+    *,
+    universe: str,
+    use_sklearn: bool = False,
+    epochs: int = 12,
+) -> str:
+    """Train on 3y daily history for provided db symbols.
+
+    Returns 'lstm' or 'mlp' depending on which trainer succeeded.
+    """
     symbol_closes: dict[str, np.ndarray] = {}
-    for sym in UNIVERSE_DB_SYMBOLS:
+    for sym in db_symbols:
         arr = fetch_closes_3y(sym)
         if arr.size > 0:
             symbol_closes[sym] = arr
@@ -180,21 +188,21 @@ def train_universe_model(*, use_sklearn: bool = False, epochs: int = 12) -> str:
         raise RuntimeError('Not enough overlapping history to train (check Yahoo / symbols).')
 
     if use_sklearn:
-        train_mlp_sklearn(X, y)
+        train_mlp_sklearn(X, y, universe=universe)
         return 'mlp'
 
     try:
-        train_lstm(X, y, epochs=epochs)
+        train_lstm(X, y, epochs=epochs, universe=universe)
         return 'lstm'
     except ImportError as exc:
         logger.warning('TensorFlow not available (%s); using sklearn MLP.', exc)
-        train_mlp_sklearn(X, y)
+        train_mlp_sklearn(X, y, universe=universe)
         return 'mlp'
 
 
-def load_predictor():
+def load_predictor(universe: str):
     """Returns ('lstm'|'mlp', model) or (None, None) if no artifact on disk."""
-    lp, mp = lstm_path(), mlp_path()
+    lp, mp = lstm_path(universe), mlp_path(universe)
     if lp.is_file():
         import tensorflow as tf  # noqa: PLC0415
 
@@ -210,7 +218,7 @@ def predict_signal_for_closes(
     closes: np.ndarray,
     predictor: tuple[str | None, object | None] | None = None,
 ) -> str:
-    kind, model = predictor if predictor is not None else load_predictor()
+    kind, model = predictor if predictor is not None else (None, None)
     if kind is None or closes.size < SEQ_LEN + 1:
         return 'hold'
     rets = np.diff(closes) / np.clip(closes[:-1], 1e-12, None)
@@ -224,11 +232,11 @@ def predict_signal_for_closes(
     return CLASS_LABELS[cls] if 0 <= cls < 3 else 'hold'
 
 
-def run_inference_for_all_stocks() -> dict[str, str]:
-    """Return symbol -> signal for universe (for logging); caller updates DB."""
-    pred = load_predictor()
+def run_inference_for_symbols(db_symbols: list[str], *, universe: str) -> dict[str, str]:
+    """Return symbol -> signal for provided symbols (for logging); caller updates DB."""
+    pred = load_predictor(universe)
     out: dict[str, str] = {}
-    for sym in UNIVERSE_DB_SYMBOLS:
+    for sym in db_symbols:
         closes = fetch_closes_3y(sym)
         out[sym] = predict_signal_for_closes(closes, pred) if closes.size else 'hold'
     return out

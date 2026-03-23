@@ -118,3 +118,36 @@ class RemoveHoldingView(APIView):
         holding.delete()
         portfolio.calculate_totals()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PortfolioChartView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        portfolio, _ = Portfolio.objects.get_or_create(user=request.user)
+        portfolio.calculate_totals()
+        holdings = portfolio.holdings.select_related('stock').all()
+
+        total = float(portfolio.total_value or 0)
+        if total <= 0:
+            return Response({'data': {'plot': None}, 'status_code': 200}, status=status.HTTP_200_OK)
+
+        labels = [h.stock.symbol for h in holdings]
+        values = [float(h.current_value or 0) / total * 100.0 for h in holdings]
+
+        plot = {
+            'data': [
+                {
+                    'type': 'pie',
+                    'labels': labels,
+                    'values': values,
+                    'hole': 0.6,
+                }
+            ],
+            'layout': {
+                'title': 'Portfolio Allocation (%)',
+                'margin': {'l': 20, 'r': 10, 't': 50, 'b': 20},
+                'template': 'plotly_white',
+            },
+        }
+        return Response({'data': {'plot': plot}, 'status_code': 200}, status=status.HTTP_200_OK)

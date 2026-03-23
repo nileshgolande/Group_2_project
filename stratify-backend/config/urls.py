@@ -3,8 +3,17 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from chat.views import ChatHistoryView, ChatView
-from portfolio.views import AddHoldingView, PortfolioView, RemoveHoldingView
-from stocks.views import StockDetailView, StockForecastView, StockListView, StockSentimentView
+from portfolio.views import AddHoldingView, PortfolioChartView, PortfolioView, RemoveHoldingView
+from stocks.views import (
+    StockChartView,
+    SectorPortfoliosView,
+    StockDetailView,
+    StockForecastChartView,
+    StockForecastView,
+    StockListView,
+    StockSentimentView,
+    StockTechnicalView,
+)
 from users.views import LoginView, ProfileView, RegisterView, SetMPinView, VerifyMPinView
 
 urlpatterns = [
@@ -18,10 +27,15 @@ urlpatterns = [
     path('api/stocks/', StockListView.as_view(), name='stock-list'),
     path('api/stocks/<str:symbol>/', StockDetailView.as_view(), name='stock-detail'),
     path('api/stocks/<str:symbol>/forecast/', StockForecastView.as_view(), name='stock-forecast'),
+    path('api/stocks/<str:symbol>/technical/', StockTechnicalView.as_view(), name='stock-technical'),
+    path('api/chart/<str:symbol>/', StockChartView.as_view(), name='stock-candlestick'),
+    path('api/forecast-chart/<str:symbol>/', StockForecastChartView.as_view(), name='stock-forecast-chart'),
     path('api/stocks/<str:symbol>/sentiment/', StockSentimentView.as_view(), name='stock-sentiment'),
+    path('api/sector-portfolios/', SectorPortfoliosView.as_view(), name='sector-portfolios'),
     path('api/portfolio/', PortfolioView.as_view(), name='portfolio'),
     path('api/portfolio/add/', AddHoldingView.as_view(), name='portfolio-add'),
     path('api/portfolio/<int:holding_id>/', RemoveHoldingView.as_view(), name='portfolio-remove'),
+    path('api/portfolio-chart/', PortfolioChartView.as_view(), name='portfolio-chart'),
     path('api/chat/', ChatView.as_view(), name='chat'),
     path('api/chat/history/', ChatHistoryView.as_view(), name='chat-history'),
 ]

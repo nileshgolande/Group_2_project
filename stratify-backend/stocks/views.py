@@ -1,6 +1,10 @@
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Case, IntegerField, When
 from rest_framework import status
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.generics import ListAPIView
@@ -11,18 +15,20 @@ from .market_data import (
     forecast_payload_from_yfinance_history,
     get_or_create_stock_from_yfinance,
     list_refresh_delay,
+    yf_symbol,
     refresh_page_if_stale,
     refresh_stock_price,
     sentiment_payload_from_yfinance,
     stock_is_stale,
 )
 from .models import Forecast, Sentiment, Stock
+from .forecasting import forecast_three_models
+from .indicators import build_technical_payload
 from .serializers import StockDetailSerializer, StockListSerializer
-from .universe import UNIVERSE_DB_SYMBOLS
 
 
 class StockListView(ListAPIView):
-    queryset = Stock.objects.filter(symbol__in=UNIVERSE_DB_SYMBOLS)
+    queryset = Stock.objects.all()
     serializer_class = StockListSerializer
     filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ['symbol', 'name']
@@ -30,6 +36,11 @@ class StockListView(ListAPIView):
 
     def get_queryset(self):
         qs = super().get_queryset()
+        univ = (self.request.query_params.get('universe') or '').lower().strip()
+        if univ in ('in', 'india', 'indian'):
+            qs = qs.filter(universe='IN')
+        elif univ in ('us', 'usa', 'usd', 'american'):
+            qs = qs.filter(universe='US')
         sector = self.request.query_params.get('sector')
         if sector:
             qs = qs.filter(sector__iexact=sector)
@@ -37,14 +48,6 @@ class StockListView(ListAPIView):
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
-        ordering_param = request.query_params.get('ordering')
-        if not ordering_param:
-            preserved = Case(
-                *[When(symbol=s, then=pos) for pos, s in enumerate(UNIVERSE_DB_SYMBOLS)],
-                output_field=IntegerField(),
-            )
-            queryset = queryset.order_by(preserved)
-
         force_live = request.query_params.get('live', '').lower() in ('1', 'true', 'yes')
         page = self.paginate_queryset(queryset)
         delay = list_refresh_delay()
@@ -103,24 +106,218 @@ class StockForecastView(APIView):
                 {'error': 'Stock not found', 'status_code': 404},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        model_type = request.query_params.get('model', 'linear')
+        days_raw = request.query_params.get('days') or request.query_params.get('forecast_days') or '7'
+        try:
+            days = int(days_raw)
+        except (TypeError, ValueError):
+            days = 7
+        if days not in (7, 30, 365):
+            days = 7
 
-        forecasts = Forecast.objects.filter(stock=stock, model_type=model_type).order_by('-forecast_days')
+        try:
+            res = forecast_three_models(sym, days=days)
+            models_out: dict[str, Any] = {}
+            for k, v in res['models'].items():
+                models_out[k] = {
+                    'predicted_price': v.get('predicted_price'),
+                    'confidence_upper': v.get('confidence_upper'),
+                    'confidence_lower': v.get('confidence_lower'),
+                    'rmse': v.get('rmse'),
+                    'mape': v.get('mape'),
+                    'forecast_series': v.get('forecast_series', []),
+                    'confidence_upper_series': v.get('confidence_upper_series', []),
+                    'confidence_lower_series': v.get('confidence_lower_series', []),
+                }
 
-        if forecasts.exists():
-            f = forecasts.first()
             forecast_data = {
-                'model': f.model_type,
-                'source': 'database',
-                'predicted_price': float(f.predicted_price),
-                'confidence_upper': float(f.confidence_upper),
-                'confidence_lower': float(f.confidence_lower),
-                'accuracy_score': float(f.accuracy_score) if f.accuracy_score is not None else None,
+                'days': days,
+                'best_model': res.get('best_model'),
+                'source': 'ml_models_on_yahoo_history',
+                'models': models_out,
             }
-        else:
-            forecast_data = forecast_payload_from_yfinance_history(sym, model_type)
+        except Exception as exc:
+            # Fallback to the previous naive implementation.
+            forecast_data = forecast_payload_from_yfinance_history(sym, model_type='linear')
+            forecast_data['note'] = f'Fallback used: {exc}'
 
         return Response({'data': forecast_data, 'status_code': 200}, status=status.HTTP_200_OK)
+
+
+class StockTechnicalView(APIView):
+    def get(self, request, symbol):
+        sym = symbol.upper().strip()
+        stock = get_or_create_stock_from_yfinance(sym)
+        if not stock:
+            return Response({'error': 'Stock not found', 'status_code': 404}, status=status.HTTP_404_NOT_FOUND)
+
+        import yfinance as yf
+        t = yf.Ticker(yf_symbol(sym))
+        df = t.history(period='3y', interval='1d', auto_adjust=True)
+        if df.empty:
+            return Response({'data': {}, 'status_code': 200}, status=status.HTTP_200_OK)
+
+        close = df['Close'].astype(float)
+        payload = build_technical_payload(close)
+        return Response({'data': payload, 'status_code': 200}, status=status.HTTP_200_OK)
+
+
+class StockChartView(APIView):
+    def get(self, request, symbol):
+        sym = symbol.upper().strip()
+        stock = get_or_create_stock_from_yfinance(sym)
+        if not stock:
+            return Response({'error': 'Stock not found', 'status_code': 404}, status=status.HTTP_404_NOT_FOUND)
+
+        import yfinance as yf
+        t = yf.Ticker(yf_symbol(sym))
+        df = t.history(period='1y', interval='1d', auto_adjust=False)
+        if df.empty:
+            return Response({'data': {'plot': None}, 'status_code': 200}, status=status.HTTP_200_OK)
+
+        df = df.dropna(subset=['Open', 'High', 'Low', 'Close'])
+        dates = [str(idx.date()) for idx in df.index]
+        open_ = [float(x) for x in df['Open'].values]
+        high = [float(x) for x in df['High'].values]
+        low = [float(x) for x in df['Low'].values]
+        close = [float(x) for x in df['Close'].values]
+
+        close_s = pd.Series(close, dtype=float)
+        ma20 = close_s.rolling(window=20, min_periods=20).mean().replace({np.nan: None}).tolist()
+        ma50 = close_s.rolling(window=50, min_periods=50).mean().replace({np.nan: None}).tolist()
+
+        plot = {
+            'data': [
+                {
+                    'type': 'candlestick',
+                    'x': dates,
+                    'open': open_,
+                    'high': high,
+                    'low': low,
+                    'close': close,
+                    'name': 'Price',
+                },
+                {
+                    'type': 'scatter',
+                    'mode': 'lines',
+                    'x': dates,
+                    'y': ma20,
+                    'name': 'MA20',
+                    'line': {'width': 2},
+                },
+                {
+                    'type': 'scatter',
+                    'mode': 'lines',
+                    'x': dates,
+                    'y': ma50,
+                    'name': 'MA50',
+                    'line': {'width': 2},
+                },
+            ],
+            'layout': {
+                'title': f'{sym} Candlestick (MA20/MA50)',
+                'margin': {'l': 30, 'r': 10, 't': 40, 'b': 20},
+                'xaxis': {'rangeslider': {'visible': False}},
+                'template': 'plotly_white',
+            },
+        }
+
+        return Response({'data': {'plot': plot}, 'status_code': 200}, status=status.HTTP_200_OK)
+
+
+class StockForecastChartView(APIView):
+    def get(self, request, symbol):
+        sym = symbol.upper().strip()
+        stock = get_or_create_stock_from_yfinance(sym)
+        if not stock:
+            return Response({'error': 'Stock not found', 'status_code': 404}, status=status.HTTP_404_NOT_FOUND)
+
+        days_raw = request.query_params.get('days') or request.query_params.get('forecast_days') or '7'
+        try:
+            days = int(days_raw)
+        except (TypeError, ValueError):
+            days = 7
+        if days not in (7, 30, 365):
+            days = 7
+
+        try:
+            res = forecast_three_models(sym, days=days)
+        except Exception as exc:
+            return Response({'data': {'plot': None, 'error': str(exc)}, 'status_code': 200}, status=status.HTTP_200_OK)
+
+        # Current price baseline
+        import yfinance as yf
+        t = yf.Ticker(yf_symbol(sym))
+        df = t.history(period='5d', interval='1d', auto_adjust=True)
+        cur = float(df['Close'].astype(float).iloc[-1]) if not df.empty else 0.0
+
+        x = list(range(1, days + 1))
+        colors = {'linear': '#0EA5E9', 'arima': '#8B5CF6', 'lstm': '#10B981'}
+
+        traces = [
+            {
+                'type': 'scatter',
+                'mode': 'lines',
+                'x': x,
+                'y': [cur] * days,
+                'name': 'Current',
+                'line': {'dash': 'dot'},
+            }
+        ]
+
+        for model_key, model_data in res['models'].items():
+            y_pred = model_data.get('forecast_series', [])
+            y_upper = model_data.get('confidence_upper_series', [])
+            y_lower = model_data.get('confidence_lower_series', [])
+            if not y_pred:
+                continue
+            traces.append(
+                {
+                    'type': 'scatter',
+                    'mode': 'lines',
+                    'x': x,
+                    'y': y_pred,
+                    'name': model_key.upper(),
+                    'line': {'width': 2, 'color': colors.get(model_key, None)},
+                }
+            )
+            # Confidence band as two lines (keeps payload small and predictable).
+            if y_upper and y_lower and len(y_upper) == len(y_lower) == days:
+                traces.append(
+                    {
+                        'type': 'scatter',
+                        'mode': 'lines',
+                        'x': x,
+                        'y': y_upper,
+                        'name': f'{model_key.upper()} CI+',
+                        'line': {'width': 1, 'color': colors.get(model_key, None), 'dash': 'dash'},
+                        'opacity': 0.5,
+                    }
+                )
+                traces.append(
+                    {
+                        'type': 'scatter',
+                        'mode': 'lines',
+                        'x': x,
+                        'y': y_lower,
+                        'name': f'{model_key.upper()} CI-',
+                        'line': {'width': 1, 'color': colors.get(model_key, None), 'dash': 'dash'},
+                        'opacity': 0.5,
+                    }
+                )
+
+        plot = {
+            'data': traces,
+            'layout': {
+                'title': f'{sym} Forecast Comparison ({days} days)',
+                'margin': {'l': 30, 'r': 10, 't': 40, 'b': 20},
+                'template': 'plotly_white',
+            },
+        }
+
+        return Response(
+            {'data': {'plot': plot, 'best_model': res.get('best_model'), 'models': res.get('models', {})}, 'status_code': 200},
+            status=status.HTTP_200_OK,
+        )
 
 
 class StockSentimentView(APIView):
@@ -149,3 +346,73 @@ class StockSentimentView(APIView):
             sentiment_data = sentiment_payload_from_yfinance(sym)
 
         return Response({'data': sentiment_data, 'status_code': 200}, status=status.HTTP_200_OK)
+
+
+class SectorPortfoliosView(APIView):
+    """
+    Return sector-wise "portfolio compositions" without writing to DB.
+
+    Because current DB has only one Portfolio per user (OneToOne), we expose the
+    generated lists first. Frontend/DB persistence can be added later.
+    """
+
+    DEFAULT_SECTORS = [
+        'Nifty Auto',
+        'Nifty Bank',
+        'Nifty Commodities',
+        'Nifty CPSE',
+        'Nifty Energy',
+        'Nifty FMCG',
+        'Nifty IT',
+        'Nifty Media',
+        'Nifty Metal',
+        'Nifty MNC',
+        'Nifty Pharma',
+        'Nifty PSE',
+        'Nifty PSU Bank',
+        'Nifty Realty',
+    ]
+
+    def get(self, request):
+        universe_raw = (request.query_params.get('universe') or '').lower().strip()
+        univ = None
+        if universe_raw in ('in', 'india', 'indian'):
+            univ = 'IN'
+        elif universe_raw in ('us', 'usa', 'usd', 'american'):
+            univ = 'US'
+
+        top_raw = (request.query_params.get('top') or '5').strip()
+        try:
+            top = int(top_raw)
+        except (TypeError, ValueError):
+            top = 5
+        top = max(1, min(top, 50))
+
+        sectors_param = (request.query_params.get('sectors') or '').strip()
+        sectors = self.DEFAULT_SECTORS if not sectors_param else [s.strip() for s in sectors_param.split(',') if s.strip()]
+
+        out = []
+        for sector in sectors:
+            qs = Stock.objects.all()
+            if univ:
+                qs = qs.filter(universe=univ)
+            qs = qs.filter(sector__iexact=sector)
+            qs = qs.order_by('-change_percent', '-current_price')[:top]
+
+            holdings = []
+            # Keep response small/explicit rather than reusing serializers with many fields.
+            for st in qs:
+                holdings.append(
+                    {
+                        'symbol': st.symbol,
+                        'name': st.name,
+                        'price': float(st.current_price or 0),
+                        'change_percent': float(st.change_percent or 0),
+                        'rnn_signal': (st.ml_rnn_signal or '').lower() or 'hold',
+                        'weight': 1.0 / top,
+                    }
+                )
+
+            out.append({'sector': sector, 'holdings': holdings})
+
+        return Response({'data': out, 'status_code': 200}, status=status.HTTP_200_OK)

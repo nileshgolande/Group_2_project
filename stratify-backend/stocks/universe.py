@@ -1,5 +1,5 @@
 """
-Curated universe of exactly 100 symbols for Stratify ML + list view.
+Curated universe helpers for Stratify.
 Maps DB symbol (no .NS) to Yahoo Finance ticker.
 """
 from __future__ import annotations
@@ -109,29 +109,61 @@ _NSE_YAHOO = [
     'UPL.NS',
     'LTIM.NS',
     'GODREJCP.NS',
+    # Additional NSE tickers to reach India-100 universe
+    'ASIANPAINT.NS',
+    'ACC.NS',
+    'SHREECEM.NS',
+    'MARICO.NS',
+    'BHEL.NS',
+    'TATAPOWER.NS',
+    'ADANIPOWER.NS',
+    'IOC.NS',
+    'PETRONET.NS',
+    'GAIL.NS',
+    'HINDZINC.NS',
+    'RBLBANK.NS',
+    'BANDHANBNK.NS',
+    'YESBANK.NS',
+    'TCIEXP.NS',
+    'KPRMILL.NS',
+    'TVSMOTOR.NS',
+    'WOCKPHARMA.NS',
+    'UJJIVANS.NS',
+    'VGUARD.NS',
+    'LTTS.NS',
+    'HDFCAMC.NS',
+    'DMART.NS',
+    'MINDTREE.NS',
+    'COFORGE.NS',
+    'SYNGENE.NS',
+    'CROMPTON.NS',
+    'JINDALSTEL.NS',
 ]
 
-_INDIAN_UNIVERSE: list[tuple[str, str]] = [
+INDIA_UNIVERSE_PAIRS: list[tuple[str, str]] = [
     (y.replace('.NS', '').upper(), y) for y in _NSE_YAHOO
 ]
+INDIA_DB_SYMBOLS: list[str] = [db for db, _ in INDIA_UNIVERSE_PAIRS]
 
 # Fixed order: global first, then NSE (exactly 100 rows when all load)
-UNIVERSE_PAIRS: list[tuple[str, str]] = _GLOBAL_UNIVERSE + _INDIAN_UNIVERSE
+UNIVERSE_PAIRS: list[tuple[str, str]] = _GLOBAL_UNIVERSE + INDIA_UNIVERSE_PAIRS
 
 UNIVERSE_DB_SYMBOLS: list[str] = [db for db, _ in UNIVERSE_PAIRS]
 
 YFIN_TICKER_BY_DB_SYMBOL: dict[str, str] = dict(UNIVERSE_PAIRS)
 
-assert len(UNIVERSE_DB_SYMBOLS) == 100, f'Expected 100 symbols, got {len(UNIVERSE_DB_SYMBOLS)}'
-
 
 def yahoo_ticker_for_db_symbol(db_symbol: str) -> str:
     s = (db_symbol or '').upper().strip()
-    return YFIN_TICKER_BY_DB_SYMBOL.get(s, f'{s}.NS')
+    # If we explicitly mapped the symbol, use it (India .NS / special tickers).
+    # Otherwise, assume it is a US-native ticker and return as-is.
+    return YFIN_TICKER_BY_DB_SYMBOL.get(s, s)
 
 
 def quote_currency_for_db_symbol(db_symbol: str) -> str:
     """INR for NSE listings; USD otherwise (indices, US equities, crypto, ETFs)."""
     s = (db_symbol or '').upper().strip()
-    y = YFIN_TICKER_BY_DB_SYMBOL.get(s, f'{s}.NS')
+    y = YFIN_TICKER_BY_DB_SYMBOL.get(s)
+    if not y:
+        return 'USD'
     return 'INR' if y.endswith('.NS') or y.endswith('.BO') else 'USD'

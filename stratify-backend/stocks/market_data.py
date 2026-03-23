@@ -117,6 +117,7 @@ def get_or_create_stock_from_yfinance(symbol: str) -> Stock | None:
             price_52w_low=low_52,
             last_price_update=timezone.now(),
             quote_currency=quote_currency_for_db_symbol(sym),
+            universe='IN' if yf_symbol(sym).endswith(('.NS', '.BO')) else 'US',
         )
         return stock
     except Exception as exc:  # noqa: BLE001
