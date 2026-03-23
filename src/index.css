@@ -1,0 +1,127 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply m-0 min-h-svh font-sans;
+  }
+
+  #root {
+    @apply min-h-svh w-full;
+  }
+}
+
+/* Marketing landing — glass surfaces (light + dark) */
+.landing-glass {
+  background-color: rgba(15, 23, 42, 0.04);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.dark .landing-glass {
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Hero carousel — progress bar + subtle Ken Burns on stills (Apple / premium editorial style) */
+@keyframes hero-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.animate-hero-progress {
+  animation: hero-progress var(--hero-progress-ms, 8500ms) linear forwards;
+  transform-origin: left center;
+}
+
+@keyframes hero-ken-burns {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.08);
+  }
+}
+
+.hero-ken-burns {
+  animation: hero-ken-burns 14s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-ken-burns {
+    animation: none;
+  }
+
+  .animate-hero-progress {
+    animation: none;
+    transform: scaleX(0.25);
+    opacity: 0.6;
+  }
+}
+
+/* Soft animated mesh for section depth (Stripe / linear.app–inspired) */
+.landing-mesh-bg {
+  background: radial-gradient(ellipse 80% 60% at 20% 40%, rgba(86, 140, 163, 0.14), transparent 55%),
+    radial-gradient(ellipse 70% 50% at 80% 60%, rgba(15, 23, 42, 0.06), transparent 50%),
+    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(86, 140, 163, 0.1), transparent 45%);
+  background-size: 120% 120%, 120% 120%, 100% 100%;
+  animation: landing-mesh-drift 22s ease-in-out infinite alternate;
+}
+
+.dark .landing-mesh-bg {
+  background: radial-gradient(ellipse 80% 60% at 20% 40%, rgba(86, 140, 163, 0.14), transparent 55%),
+    radial-gradient(ellipse 70% 50% at 80% 60%, rgba(15, 23, 42, 0.45), transparent 50%),
+    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(86, 140, 163, 0.08), transparent 45%);
+}
+
+@keyframes landing-mesh-drift {
+  0% {
+    background-position: 0% 0%, 100% 100%, 50% 100%;
+  }
+  100% {
+    background-position: 100% 40%, 0% 60%, 50% 80%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-mesh-bg {
+    animation: none;
+  }
+}
+
+@layer utilities {
+  @keyframes chatbot-dot-bounce {
+    0%,
+    60%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.5;
+    }
+    30% {
+      transform: translateY(-4px);
+      opacity: 1;
+    }
+  }
+
+  .animate-chatbot-dot {
+    animation: chatbot-dot-bounce 1.2s ease-in-out infinite;
+  }
+
+  .animate-chatbot-dot-delay-1 {
+    animation-delay: 0.2s;
+  }
+
+  .animate-chatbot-dot-delay-2 {
+    animation-delay: 0.4s;
+  }
+}
