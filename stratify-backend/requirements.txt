@@ -16,3 +16,4 @@ python-telegram-bot==20.7
 yfinance==0.2.32
 google-generativeai==0.3.2
 requests==2.31.0
+# Optional: PyTorch for Bizmetric-style LSTM/CNN prediction curves (pip install torch --index-url https://download.pytorch.org/whl/cpu)

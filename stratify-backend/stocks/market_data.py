@@ -75,6 +75,78 @@ def refresh_stock_price(stock, *, throttle_sleep: float = 0.0) -> bool:
         return False
 
 
+def _extract_close_series_from_download(hist_df, ticker: str):
+    """Return Close series for a ticker from yf.download output."""
+    if hist_df is None or getattr(hist_df, 'empty', True):
+        return None
+    # Multi-ticker shape: columns MultiIndex (ticker, field)
+    if hasattr(hist_df.columns, 'nlevels') and hist_df.columns.nlevels > 1:
+        try:
+            sub = hist_df[ticker]
+        except Exception:  # noqa: BLE001
+            return None
+        if 'Close' not in sub.columns:
+            return None
+        s = sub['Close']
+        return s.dropna() if s is not None else None
+    # Single-ticker shape: columns ['Open','High','Low','Close',...]
+    if 'Close' not in hist_df.columns:
+        return None
+    s = hist_df['Close']
+    return s.dropna() if s is not None else None
+
+
+def refresh_stocks_prices_batch(stocks, *, throttle_sleep: float = 0.0) -> int:
+    """
+    Batch-refresh many stock prices using one yf.download call.
+    Returns number of successfully updated rows.
+    """
+    stocks = list(stocks or [])
+    if not stocks:
+        return 0
+    if throttle_sleep > 0:
+        time.sleep(throttle_sleep)
+
+    ticker_map = {st: yf_symbol(st.symbol) for st in stocks}
+    tickers = list(dict.fromkeys(ticker_map.values()))
+
+    try:
+        hist_df = yf.download(
+            tickers=tickers,
+            period='5d',
+            interval='1d',
+            auto_adjust=True,
+            group_by='ticker',
+            threads=True,
+            progress=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('yfinance batch refresh failed for %d symbols: %s', len(stocks), exc)
+        return 0
+
+    now = timezone.now()
+    changed = []
+    for st in stocks:
+        ticker = ticker_map.get(st)
+        close_s = _extract_close_series_from_download(hist_df, ticker)
+        if close_s is None or len(close_s) == 0:
+            continue
+        try:
+            last = Decimal(str(float(close_s.iloc[-1])))
+            prev = Decimal(str(float(close_s.iloc[-2]))) if len(close_s) > 1 else last
+            chg = ((last - prev) / prev * 100) if prev else Decimal('0')
+            st.current_price = last
+            st.change_percent = chg.quantize(Decimal('0.0001'))
+            st.last_price_update = now
+            changed.append(st)
+        except Exception:  # noqa: BLE001
+            continue
+
+    if changed:
+        Stock.objects.bulk_update(changed, ['current_price', 'change_percent', 'last_price_update'])
+    return len(changed)
+
+
 def get_or_create_stock_from_yfinance(symbol: str) -> Stock | None:
     """
     If the symbol is not in the DB, try Yahoo (NSE .NS) and create a row.
@@ -230,12 +302,18 @@ def refresh_page_if_stale(stocks) -> None:
     """Refresh up to list_max_refresh() symbols that are stale; delay between calls to ease rate limits."""
     delay = list_refresh_delay()
     cap = list_max_refresh()
-    done = 0
+    stale = []
     for st in stocks:
-        if done >= cap:
+        if len(stale) >= cap:
             break
         if stock_is_stale(st):
-            if refresh_stock_price(st, throttle_sleep=delay if done else 0.0):
-                done += 1
-            elif delay:
-                time.sleep(delay)
+            stale.append(st)
+    if not stale:
+        return
+
+    updated = refresh_stocks_prices_batch(stale, throttle_sleep=delay)
+    # Fallback for symbols that failed in batch (best effort, still capped and cheap).
+    if updated < len(stale):
+        for st in stale:
+            if st.last_price_update is None or stock_is_stale(st):
+                refresh_stock_price(st, throttle_sleep=0.0)

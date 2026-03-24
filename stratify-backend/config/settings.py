@@ -173,6 +173,6 @@ STOCK_LIVE_MAX_STALE_SECONDS = config('STOCK_LIVE_MAX_STALE_SECONDS', default=12
 # Small delay between Yahoo calls when refreshing a list (helps avoid 429)
 STOCK_LIVE_REQUEST_DELAY_SECONDS = config('STOCK_LIVE_REQUEST_DELAY_SECONDS', default=0.15, cast=float)
 # Max symbols to refresh per paginated list request
-STOCK_LIVE_LIST_MAX_REFRESH = config('STOCK_LIVE_LIST_MAX_REFRESH', default=30, cast=int)
+STOCK_LIVE_LIST_MAX_REFRESH = config('STOCK_LIVE_LIST_MAX_REFRESH', default=12, cast=int)
 # Detail JSON cache TTL (seconds); keep low so live refreshes show up quickly
 STOCK_DETAIL_CACHE_SECONDS = config('STOCK_DETAIL_CACHE_SECONDS', default=45, cast=int)

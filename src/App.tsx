@@ -11,6 +11,7 @@ import { Login } from './pages/Auth/Login';
 import { ResetPassword } from './pages/Auth/ResetPassword';
 import { Signup } from './pages/Auth/Signup';
 import { Portfolio } from './pages/Portfolio';
+import { MlCommodities } from './pages/MlCommodities';
 import { Recommendations } from './pages/Recommendations';
 import { StockDetail } from './pages/Stocks/StockDetail';
 import { StocksList } from './pages/Stocks/StocksList';
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="/portfolio" element={<Portfolio />} />
             <Route path="/stocks/:symbol" element={<StockDetail />} />
             <Route path="/stocks" element={<StocksList />} />
+            <Route path="/ml/commodities" element={<MlCommodities />} />
             <Route path="/recommendations" element={<Recommendations />} />
             <Route path="/chat" element={<ChatPage />} />
           </Route>

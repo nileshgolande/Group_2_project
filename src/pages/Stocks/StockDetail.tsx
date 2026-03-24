@@ -1,63 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '../../components/Common/Button';
 import { Card } from '../../components/Common/Card';
 import { Skeleton } from '../../components/Common/Skeleton';
-
-export interface StockDetailMock {
-  symbol: string;
-  name: string;
-  sector: string;
-  price: number;
-  change: number;
-  high52w: number;
-  low52w: number;
-}
-
-const TCS_MOCK: StockDetailMock = {
-  symbol: 'TCS',
-  name: 'Tata Consultancy Services',
-  sector: 'IT',
-  price: 3240,
-  change: 2.3,
-  high52w: 3890,
-  low52w: 2890,
-};
-
-const EXTRA_MOCKS: Record<string, Omit<StockDetailMock, 'symbol'>> = {
-  ITC: {
-    name: 'ITC Limited',
-    sector: 'FMCG',
-    price: 412.3,
-    change: -0.42,
-    high52w: 480,
-    low52w: 390,
-  },
-  HDFC: {
-    name: 'HDFC Bank Limited',
-    sector: 'Banking',
-    price: 1658,
-    change: 0.88,
-    high52w: 1790,
-    low52w: 1420,
-  },
-  INFY: {
-    name: 'Infosys Limited',
-    sector: 'IT',
-    price: 1502.2,
-    change: -1.05,
-    high52w: 1620,
-    low52w: 1320,
-  },
-  WIPRO: {
-    name: 'Wipro Limited',
-    sector: 'IT',
-    price: 248.75,
-    change: 0.56,
-    high52w: 285,
-    low52w: 210,
-  },
-};
+import { API_ENDPOINTS } from '../../constants/api';
+import { apiClient } from '../../services/api';
+import { AnalyticsTab, ForecastTab, SentimentTab, TechnicalTab } from './StockDetailTabs';
 
 type DetailTab = 'overview' | 'analytics' | 'technical' | 'forecast' | 'sentiment';
 
@@ -69,31 +17,50 @@ const TABS: { id: DetailTab; label: string }[] = [
   { id: 'sentiment', label: 'Sentiment' },
 ];
 
-function formatInr(n: number): string {
-  return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+export interface StockDetailPayload {
+  symbol: string;
+  name: string;
+  sector: string;
+  current_price: string | number | null;
+  change_percent: string | number | null;
+  price_52w_high: string | number | null;
+  price_52w_low: string | number | null;
+  market_cap: number | null;
+  pe_ratio: string | number | null;
+  pb_ratio: string | number | null;
+  dividend_yield: string | number | null;
+  description?: string | null;
+  quote_currency?: string;
 }
 
-function getMockStock(symbolParam: string | undefined): StockDetailMock {
-  const key = (symbolParam ?? 'TCS').toUpperCase();
-  if (key === 'TCS') {
-    return TCS_MOCK;
-  }
-  const extra = EXTRA_MOCKS[key];
-  if (extra) {
-    return { symbol: key, ...extra };
-  }
-  return {
-    symbol: key,
-    name: `${key} Limited`,
-    sector: '—',
-    price: 1000,
-    change: 0,
-    high52w: 1100,
-    low52w: 900,
-  };
+function toNum(v: string | number | null | undefined): number {
+  if (v == null || v === '') return 0;
+  const n = typeof v === 'number' ? v : Number.parseFloat(String(v));
+  return Number.isFinite(n) ? n : 0;
 }
 
-function changeInrFromPercent(price: number, changePct: number): number {
+function formatMoney(amount: number, currency: string): string {
+  const c = (currency || 'INR').toUpperCase();
+  if (c === 'USD') {
+    return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  return `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+}
+
+function formatMarketCap(mc: number | null, currency: string): string {
+  if (mc == null || !Number.isFinite(mc) || mc <= 0) return '—';
+  const c = (currency || 'INR').toUpperCase();
+  if (c === 'USD') {
+    const b = mc / 1e9;
+    if (b >= 1) return `$${b.toFixed(2)}B`;
+    return `$${(mc / 1e6).toFixed(2)}M`;
+  }
+  const cr = mc / 1e7;
+  if (cr >= 10000) return `₹${(cr / 10000).toFixed(2)}L Cr`;
+  return `₹${cr.toLocaleString('en-IN', { maximumFractionDigits: 2 })} Cr`;
+}
+
+function changeAbsFromPercent(price: number, changePct: number): number {
   const prev = price / (1 + changePct / 100);
   return price - prev;
 }
@@ -101,17 +68,55 @@ function changeInrFromPercent(price: number, changePct: number): number {
 export function StockDetail() {
   const { symbol } = useParams<{ symbol: string }>();
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [stock, setStock] = useState<StockDetailPayload | null>(null);
   const [tab, setTab] = useState<DetailTab>('overview');
 
   useEffect(() => {
-    setLoading(true);
-    const t = window.setTimeout(() => setLoading(false), 450);
-    return () => window.clearTimeout(t);
+    setTab('overview');
   }, [symbol]);
 
-  const stock = useMemo(() => getMockStock(symbol), [symbol]);
-  const changeInr = changeInrFromPercent(stock.price, stock.change);
-  const changePositive = stock.change >= 0;
+  useEffect(() => {
+    const sym = symbol?.trim();
+    if (!sym) {
+      setStock(null);
+      setError('Missing symbol');
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const { data } = await apiClient.get<{ data?: StockDetailPayload; status_code?: number }>(
+          API_ENDPOINTS.stocks.detail(sym)
+        );
+        if (cancelled) return;
+        const payload = data?.data;
+        if (!payload || typeof payload !== 'object') {
+          setError('Unexpected response from the API.');
+          setStock(null);
+          return;
+        }
+        setStock(payload as StockDetailPayload);
+      } catch {
+        if (!cancelled) {
+          setError(
+            'Could not load this symbol. Check the API is running, the symbol exists, or try again.'
+          );
+          setStock(null);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol]);
 
   if (loading) {
     return (
@@ -137,6 +142,31 @@ export function StockDetail() {
     );
   }
 
+  if (error || !stock) {
+    return (
+      <div className="space-y-4 pb-8">
+        <nav className="text-sm text-gray dark:text-gray">
+          <Link to="/stocks" className="font-medium text-emerald hover:underline">
+            Stocks
+          </Link>
+        </nav>
+        <Card>
+          <p className="text-sm text-navy dark:text-white">{error ?? 'Stock not found.'}</p>
+          <p className="mt-2 text-sm text-gray dark:text-gray">
+            Ensure Django is running at <code className="rounded bg-navy/5 px-1 dark:bg-white/10">VITE_API_URL</code>{' '}
+            (default <code className="rounded bg-navy/5 px-1 dark:bg-white/10">http://localhost:8000/api</code>).
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
+  const currency = stock.quote_currency || 'INR';
+  const price = toNum(stock.current_price);
+  const changePct = toNum(stock.change_percent);
+  const changeAbs = changeAbsFromPercent(price, changePct);
+  const changePositive = changePct >= 0;
+
   return (
     <div className="grid grid-cols-1 gap-6 pb-8 lg:grid-cols-[1fr_minmax(260px,300px)] lg:items-start">
       <div className="min-w-0 space-y-6">
@@ -156,14 +186,14 @@ export function StockDetail() {
                   {stock.symbol}
                 </h1>
                 <span className="rounded-md bg-navy/5 px-2 py-0.5 text-sm font-medium text-gray dark:bg-white/10 dark:text-gray">
-                  {stock.sector}
+                  {stock.sector || '—'}
                 </span>
               </div>
               <p className="text-lg text-navy/80 dark:text-white/80">{stock.name}</p>
             </div>
             <div className="text-left lg:text-right">
               <p className="text-4xl font-semibold tabular-nums text-navy dark:text-white sm:text-5xl">
-                {formatInr(stock.price)}
+                {formatMoney(price, currency)}
               </p>
               <p
                 className={
@@ -173,8 +203,8 @@ export function StockDetail() {
                 }
               >
                 {changePositive ? '+' : ''}
-                {stock.change.toFixed(1)}% ({changePositive ? '+' : ''}
-                {formatInr(changeInr)})
+                {changePct.toFixed(2)}% ({changePositive ? '+' : ''}
+                {formatMoney(Math.abs(changeAbs), currency)})
               </p>
             </div>
           </div>
@@ -184,7 +214,7 @@ export function StockDetail() {
                 52W High
               </p>
               <p className="mt-1 text-lg font-semibold tabular-nums text-navy dark:text-white">
-                {formatInr(stock.high52w)}
+                {formatMoney(toNum(stock.price_52w_high), currency)}
               </p>
             </div>
             <div>
@@ -192,7 +222,7 @@ export function StockDetail() {
                 52W Low
               </p>
               <p className="mt-1 text-lg font-semibold tabular-nums text-navy dark:text-white">
-                {formatInr(stock.low52w)}
+                {formatMoney(toNum(stock.price_52w_low), currency)}
               </p>
             </div>
           </div>
@@ -227,16 +257,12 @@ export function StockDetail() {
           })}
         </div>
 
-        <div
-          role="tabpanel"
-          id={`stock-panel-${tab}`}
-          aria-labelledby={`stock-tab-${tab}`}
-        >
-          {tab === 'overview' && <OverviewPanel symbol={stock.symbol} />}
-          {tab === 'analytics' && <PlaceholderPanel text="Fundamental data here" />}
-          {tab === 'technical' && <PlaceholderPanel text="Chart here" />}
-          {tab === 'forecast' && <PlaceholderPanel text="Models here" />}
-          {tab === 'sentiment' && <PlaceholderPanel text="Gauge here" />}
+        <div role="tabpanel" id={`stock-panel-${tab}`} aria-labelledby={`stock-tab-${tab}`}>
+          {tab === 'overview' && <OverviewPanel stock={stock} />}
+          {tab === 'analytics' && <AnalyticsTab symbol={stock.symbol} />}
+          {tab === 'technical' && <TechnicalTab symbol={stock.symbol} />}
+          {tab === 'forecast' && <ForecastTab symbol={stock.symbol} currency={currency} />}
+          {tab === 'sentiment' && <SentimentTab symbol={stock.symbol} />}
         </div>
       </div>
 
@@ -260,24 +286,29 @@ export function StockDetail() {
   );
 }
 
-function OverviewPanel({ symbol }: { symbol: string }) {
+function OverviewPanel({ stock }: { stock: StockDetailPayload }) {
+  const currency = stock.quote_currency || 'INR';
+  const pe = stock.pe_ratio != null && stock.pe_ratio !== '' ? toNum(stock.pe_ratio) : null;
+  const pb = stock.pb_ratio != null && stock.pb_ratio !== '' ? toNum(stock.pb_ratio) : null;
+  const divYield = stock.dividend_yield != null && stock.dividend_yield !== '' ? toNum(stock.dividend_yield) : null;
+  const blurb =
+    (stock.description && stock.description.trim()) ||
+    `${stock.name} (${stock.symbol}) — overview data from your Stratify API.`;
+
+  const metrics: { label: string; value: string }[] = [
+    { label: 'Market cap', value: formatMarketCap(stock.market_cap != null ? Number(stock.market_cap) : null, currency) },
+    { label: 'P/E (TTM)', value: pe != null && pe > 0 ? pe.toFixed(2) : '—' },
+    { label: 'P/B', value: pb != null && pb > 0 ? pb.toFixed(2) : '—' },
+    { label: 'Div. yield', value: divYield != null && divYield > 0 ? `${divYield.toFixed(2)}%` : '—' },
+  ];
+
   return (
     <Card>
       <h2 className="text-base font-semibold text-navy dark:text-white">Company overview</h2>
-      <p className="mt-3 text-sm leading-relaxed text-navy/80 dark:text-white/75">
-        {symbol} is a leading listed company in its sector. This overview is mock content for Morpheus —
-        connect your data source for filings, KPIs, and narrative summaries.
-      </p>
+      <p className="mt-3 text-sm leading-relaxed text-navy/80 dark:text-white/75">{blurb}</p>
       <h3 className="mt-6 text-sm font-semibold text-navy dark:text-white">Key metrics</h3>
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {[
-          { label: 'Market cap', value: '₹12.4L Cr' },
-          { label: 'P/E (TTM)', value: '28.4' },
-          { label: 'EPS (TTM)', value: formatInr(114.2) },
-          { label: 'Div. yield', value: '1.2%' },
-          { label: 'Beta', value: '0.92' },
-          { label: 'ROE', value: '43.2%' },
-        ].map((m) => (
+        {metrics.map((m) => (
           <div
             key={m.label}
             className="rounded-lg border border-navy/10 bg-navy/[0.02] px-4 py-3 dark:border-white/10 dark:bg-white/[0.04]"
@@ -286,16 +317,6 @@ function OverviewPanel({ symbol }: { symbol: string }) {
             <p className="mt-1 font-semibold tabular-nums text-navy dark:text-white">{m.value}</p>
           </div>
         ))}
-      </div>
-    </Card>
-  );
-}
-
-function PlaceholderPanel({ text }: { text: string }) {
-  return (
-    <Card>
-      <div className="flex min-h-[200px] items-center justify-center rounded-lg border border-dashed border-navy/15 bg-navy/[0.03] dark:border-white/10 dark:bg-white/[0.04]">
-        <p className="text-sm text-gray dark:text-gray">{text}</p>
       </div>
     </Card>
   );

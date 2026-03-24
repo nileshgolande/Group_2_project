@@ -1,6 +1,7 @@
 import {
   Briefcase,
   LayoutDashboard,
+  LineChart,
   MessageCircle,
   Sparkles,
   TrendingUp,
@@ -14,6 +15,7 @@ const nav = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/portfolio', label: 'Portfolio', icon: Briefcase, end: false },
   { to: '/stocks', label: 'Stocks', icon: TrendingUp, end: false },
+  { to: '/ml/commodities', label: 'ML commodities', icon: LineChart, end: false },
   { to: '/recommendations', label: 'Recommendations', icon: Sparkles, end: false },
   { to: '/chat', label: 'Chat', icon: MessageCircle, end: false },
 ] as const;
